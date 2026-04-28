@@ -1,5 +1,6 @@
 """Code related to the config that lichess-bot uses."""
 from __future__ import annotations
+import json
 import yaml
 import os
 import logging
@@ -278,9 +279,10 @@ def log_config(CONFIG: CONFIG_DICT_TYPE, alternate_log_function: Callable[[str],
     """
     logger_config = CONFIG.copy()
     logger_config["token"] = "logger"  # noqa: S105 (Possible hardcoded password)
-    destination = alternate_log_function or logger.debug
-    destination(f"Config:\n{yaml.dump(logger_config, sort_keys=False)}")
-    destination("====================")
+    if alternate_log_function:
+        alternate_log_function(json.dumps({"config": logger_config}, sort_keys=True, default=str))
+    else:
+        logger.debug("Config", extra={"config": logger_config})
 
 
 def validate_config(CONFIG: CONFIG_DICT_TYPE) -> None:

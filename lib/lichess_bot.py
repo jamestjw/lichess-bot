@@ -33,7 +33,6 @@ from lib.lichess_types import (UserProfileType, EventType, GameType, GameEventTy
                                CORRESPONDENCE_QUEUE_TYPE, LOGGING_QUEUE_TYPE, PGN_QUEUE_TYPE)
 from requests.exceptions import (ChunkedEncodingError, ConnectionError as RequestsConnectionError, HTTPError, ReadTimeout,
                                  RequestException)
-from rich.logging import RichHandler
 from collections import defaultdict
 from collections.abc import Iterator, MutableSequence
 from http.client import RemoteDisconnected
@@ -41,7 +40,7 @@ from queue import Empty
 from multiprocessing.pool import Pool
 from collections import Counter
 from typing import TypedDict, cast, TypeAlias
-from types import FrameType
+from types import FrameType, TracebackType
 MULTIPROCESSING_LIST_TYPE: TypeAlias = MutableSequence[model.Challenge]
 POOL_TYPE: TypeAlias = Pool
 
@@ -70,6 +69,44 @@ class VersioningType(TypedDict):
 
 
 logger = logging.getLogger(__name__)
+
+
+class JsonFormatter(logging.Formatter):
+    """Render log records as JSON for ingestion."""
+
+    _reserved_keys = {
+        "args", "asctime", "created", "exc_info", "exc_text", "filename", "funcName",
+        "levelname", "levelno", "lineno", "module", "msecs", "message", "msg", "name",
+        "pathname", "process", "processName", "relativeCreated", "stack_info", "thread",
+        "threadName",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "timestamp": datetime.datetime.fromtimestamp(record.created, tz=datetime.timezone.utc).isoformat(),
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "function": record.funcName,
+        }
+
+        extras = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in self._reserved_keys
+        }
+        if extras:
+            payload.update(extras)
+
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+
+        if record.stack_info:
+            payload["stack"] = record.stack_info
+
+        return json.dumps(payload, default=str, ensure_ascii=False)
+
+    def formatException(self, ei: tuple[type[BaseException], BaseException, TracebackType | None]) -> str:
+        return "".join(traceback.format_exception(*ei)).strip()
 
 with open(os.path.join(os.path.dirname(__file__), "versioning.yml")) as version_file:
     versioning_info: VersioningType = yaml.safe_load(version_file)
@@ -170,16 +207,15 @@ def logging_configurer(level: int, filename: str | None, disable_auto_logs: bool
     :param filename: The filename to write the logs to. If it is `None` then the logs aren't written to a file.
     :param disable_auto_logs: Whether to disable automatic logging.
     """
-    console_handler = RichHandler()
-    console_formatter = logging.Formatter("%(message)s")
+    console_handler = logging.StreamHandler()
+    console_formatter = JsonFormatter()
     console_handler.setFormatter(console_formatter)
     console_handler.setLevel(level)
     all_handlers: list[logging.Handler] = [console_handler]
 
     if filename:
         file_handler = logging.FileHandler(filename, delay=True, encoding="utf-8")
-        FORMAT = "%(asctime)s %(name)s (%(filename)s:%(lineno)d) %(levelname)s %(message)s"
-        file_formatter = logging.Formatter(FORMAT)
+        file_formatter = JsonFormatter()
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(level)
         all_handlers.append(file_handler)
@@ -196,8 +232,7 @@ def logging_configurer(level: int, filename: str | None, disable_auto_logs: bool
                                                                       backupCount=7)
         auto_file_handler.setLevel(logging.DEBUG)
 
-        FORMAT = "%(asctime)s %(name)s (%(filename)s:%(lineno)d) %(levelname)s %(message)s"
-        file_formatter = logging.Formatter(FORMAT)
+        file_formatter = JsonFormatter()
         auto_file_handler.setFormatter(file_formatter)
         all_handlers.append(auto_file_handler)
 
@@ -449,8 +484,7 @@ def next_event(control_queue: CONTROL_QUEUE_TYPE) -> EventType:
         return {}
 
     if "type" not in event:
-        logger.warning("Unable to handle response from lichess.org:")
-        logger.warning(event)
+        logger.warning("Unable to handle response from lichess.org: %s", event)
         control_queue.task_done()
         return {}
 
@@ -836,8 +870,7 @@ def fake_think_time(config: Configuration, board: chess.Board, game: model.Game)
 
 def print_move_number(board: chess.Board) -> None:
     """Log the move number."""
-    logger.info("")
-    logger.info(f"move: {len(board.move_stack) // 2 + 1}")
+    logger.info("move: %d", len(board.move_stack) // 2 + 1)
 
 
 def next_update(lines: Iterator[bytes]) -> GameEventType:
@@ -1160,13 +1193,7 @@ def save_pgn_record(event: EventType, config: Configuration, user_name: str) -> 
 
 def intro() -> str:
     """Return the intro string."""
-    return fr"""
-    .   _/|
-    .  // o\
-    .  || ._)  lichess-bot {__version__} on {platform.system()} {platform.release()}
-    .  //__\
-    .  )___(   Play on Lichess with a bot
-    """
+    return f"lichess-bot {__version__} on {platform.system()} {platform.release()} - Play on Lichess with a bot"
 
 
 auto_log_directory = "lichess_bot_auto_logs"
@@ -1174,13 +1201,14 @@ auto_log_directory = "lichess_bot_auto_logs"
 
 def log_python_and_libraries() -> None:
     """Log the installed libraries and the python version."""
-    logger.debug(f"Python version: {'.'.join(map(str, sys.version_info))}")
-    text = "Installed libraries:\n"
     distributions = importlib.metadata.distributions()
-    for distribution in distributions:
-        text += f"{distribution.metadata['Name']}=={distribution.version}\n"
-    text += "\n"
-    logger.debug(text)
+    logger.debug(
+        "Runtime environment",
+        extra={
+            "python_version": ".".join(map(str, sys.version_info)),
+            "installed_libraries_count": sum(1 for _ in distributions),
+        },
+    )
 
 
 def start_lichess_bot() -> None:
@@ -1195,7 +1223,7 @@ def start_lichess_bot() -> None:
 
     logging_level = logging.DEBUG if args.v else logging.INFO
     logging_configurer(logging_level, args.logfile, args.disable_auto_logging)
-    logger.info(intro(), extra={"highlighter": None})
+    logger.info(intro())
 
     CONFIG = load_config(args.config or "./config.yml")
     if not args.disable_auto_logging:
