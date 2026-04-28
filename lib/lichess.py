@@ -6,7 +6,6 @@ from requests.exceptions import ConnectionError as RequestsConnectionError, HTTP
 from http.client import RemoteDisconnected
 import backoff
 import logging
-import traceback
 from collections import defaultdict
 import datetime
 import contextlib
@@ -114,9 +113,17 @@ def backoff_handler(details: BackoffDetails) -> None:
     kwargs = details["kwargs"]
     if "token_test" in args:
         kwargs["data"] = "<token redacted>"
-    logger.debug("Backing off {wait:0.1f} seconds after {tries} tries "
-                 "calling function {target} with args {args} and kwargs {kwargs}".format(**details))
-    logger.debug(f"Exception: {traceback.format_exc()}")
+    logger.debug(
+        "Backing off",
+        extra={
+            "wait_seconds": details.get("wait"),
+            "tries": details["tries"],
+            "target": getattr(details["target"], "__name__", str(details["target"])),
+            "args": args,
+            "kwargs": kwargs,
+        },
+    )
+    logger.debug("Backoff exception", exc_info=True)
 
 
 # Docs: https://lichess.org/api.
@@ -318,7 +325,10 @@ class Lichess:
         :param path_template: The path template.
         :param delay_time: How long we won't call this endpoint.
         """
-        logger.warning(f"Endpoint {path_template} is rate limited. Waiting {sec_str(delay_time)} seconds until next request.")
+        logger.warning(
+            "Endpoint rate limited",
+            extra={"endpoint": path_template, "wait_seconds": sec_str(delay_time)},
+        )
         self.rate_limit_timers[path_template] = Timer(delay_time)
 
     def is_rate_limited(self, path_template: str) -> bool:
@@ -364,9 +374,10 @@ class Lichess:
         :param text: The text to send.
         """
         if len(text) > MAX_CHAT_MESSAGE_LEN:
-            logger.warning(f"This chat message is {len(text)} characters, which is longer "
-                           f"than the maximum of {MAX_CHAT_MESSAGE_LEN}. It will not be sent.")
-            logger.warning(f"Message: {text}")
+            logger.warning(
+                "Chat message too long",
+                extra={"message_length": len(text), "max_length": MAX_CHAT_MESSAGE_LEN, "message": text},
+            )
 
         data = {"room": room, "text": text}
         self.api_post("chat", game_id, data=data)
