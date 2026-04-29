@@ -1,8 +1,13 @@
 """Communication with APIs."""
+
 import json
 import requests
 from urllib.parse import urljoin
-from requests.exceptions import ConnectionError as RequestsConnectionError, HTTPError, ReadTimeout
+from requests.exceptions import (
+    ConnectionError as RequestsConnectionError,
+    HTTPError,
+    ReadTimeout,
+)
 from http.client import RemoteDisconnected
 import backoff
 import logging
@@ -12,9 +17,16 @@ import contextlib
 from lib.timer import Timer, seconds, sec_str
 from typing import cast
 import chess.engine
-from lib.lichess_types import (UserProfileType, REQUESTS_PAYLOAD_TYPE, GameType, PublicDataType, OnlineType,
-                       ChallengeType, TOKEN_TESTS_TYPE, BackoffDetails)
-
+from lib.lichess_types import (
+    UserProfileType,
+    REQUESTS_PAYLOAD_TYPE,
+    GameType,
+    PublicDataType,
+    OnlineType,
+    ChallengeType,
+    TOKEN_TESTS_TYPE,
+    BackoffDetails,
+)
 
 ENDPOINTS = {
     "profile": "/api/account",
@@ -35,7 +47,7 @@ ENDPOINTS = {
     "cancel": "/api/challenge/{}/cancel",
     "status": "/api/users/status",
     "public_data": "/api/user/{}",
-    "token_test": "/api/token/test"
+    "token_test": "/api/token/test",
 }
 
 
@@ -70,14 +82,20 @@ def is_new_rate_limit(response: requests.models.Response) -> bool:
     """Check if the status code is 429, which means that we are rate limited."""
     return response.status_code == 429
 
-def is_daily_game_rate_limit(response: requests.models.Response, rate_limit_status_code: int) -> bool:
+
+def is_daily_game_rate_limit(
+    response: requests.models.Response, rate_limit_status_code: int
+) -> bool:
     """Check if response to challenge is a rate limit, either of the bot or the opponent."""
     if response.status_code != rate_limit_status_code:
         return False
 
     try:
         body = response.json()
-        return "error" in body and body.get("ratelimit", {}).get("key", "") == "bot.vsBot.day"
+        return (
+            "error" in body
+            and body.get("ratelimit", {}).get("key", "") == "bot.vsBot.day"
+        )
     except requests.exceptions.JSONDecodeError:
         return False
 
@@ -92,7 +110,9 @@ def is_bot_rate_limit(response: requests.models.Response) -> bool:
     return is_daily_game_rate_limit(response, 429)
 
 
-def get_challenge_timeout(challenge_response: ChallengeType) -> datetime.timedelta | None:
+def get_challenge_timeout(
+    challenge_response: ChallengeType,
+) -> datetime.timedelta | None:
     """Return the timeout in a challenge response if the bot or the opponent cannot play another game."""
     rate_limit = challenge_response.get("ratelimit", {})
     key = rate_limit.get("key", "")
@@ -103,8 +123,12 @@ def get_challenge_timeout(challenge_response: ChallengeType) -> datetime.timedel
 
 def is_final(exception: Exception) -> bool:
     """If `is_final` returns True then we won't retry."""
-    return (isinstance(exception, HTTPError) and exception.response is not None and exception.response.status_code < 500
-            or stop.force_quit)
+    return (
+        isinstance(exception, HTTPError)
+        and exception.response is not None
+        and exception.response.status_code < 500
+        or stop.force_quit
+    )
 
 
 def backoff_handler(details: BackoffDetails) -> None:
@@ -114,7 +138,7 @@ def backoff_handler(details: BackoffDetails) -> None:
     if "token_test" in args:
         kwargs["data"] = "<token redacted>"
     logger.debug(
-        "Backing off",
+        "backoff_retry",
         extra={
             "wait_seconds": details.get("wait"),
             "tries": details["tries"],
@@ -123,14 +147,16 @@ def backoff_handler(details: BackoffDetails) -> None:
             "kwargs": kwargs,
         },
     )
-    logger.debug("Backoff exception", exc_info=True)
+    logger.debug("backoff_exception", exc_info=True)
 
 
 # Docs: https://lichess.org/api.
 class Lichess:
     """Communication with lichess.org (and chessdb.cn for getting moves)."""
 
-    def __init__(self, token: str, url: str, version: str, logging_level: int, max_retries: int) -> None:
+    def __init__(
+        self, token: str, url: str, version: str, logging_level: int, max_retries: int
+    ) -> None:
         """
         Communication with lichess.org (and chessdb.cn for getting moves).
 
@@ -141,9 +167,7 @@ class Lichess:
         :param max_retries: The maximum amount of retries for online moves (e.g. chessdb's opening book).
         """
         self.version = version
-        self.header = {
-            "Authorization": f"Bearer {token}"
-        }
+        self.header = {"Authorization": f"Bearer {token}"}
         self.baseUrl = url
         self.session = requests.Session()
         self.session.headers.update(self.header)
@@ -158,27 +182,38 @@ class Lichess:
         token_info = token_response.get(token)
 
         if not token_info:
-            raise RuntimeError("There was an error in retrieving information about the bot's token. "
-                               "Please check that it was copied correctly into your configuration file "
-                               "and try again.")
+            raise RuntimeError(
+                "There was an error in retrieving information about the bot's token. "
+                "Please check that it was copied correctly into your configuration file "
+                "and try again."
+            )
 
         scopes = token_info.get("scopes", "")
         if "bot:play" not in scopes.split(","):
-            raise RuntimeError("Please use an API access token for your bot that "
-                               'has the scope "Play games with the bot API (bot:play)". '
-                               f"The current token has: {scopes}.")
+            raise RuntimeError(
+                "Please use an API access token for your bot that "
+                'has the scope "Play games with the bot API (bot:play)". '
+                f"The current token has: {scopes}."
+            )
 
-    @backoff.on_exception(backoff.constant,
-                          (RemoteDisconnected, RequestsConnectionError, HTTPError, ReadTimeout),
-                          max_time=60,
-                          interval=0.1,
-                          giveup=is_final,
-                          on_backoff=backoff_handler,
-                          backoff_log_level=logging.DEBUG,
-                          giveup_log_level=logging.DEBUG)
-    def api_get(self, endpoint_name: str, *template_args: str,
-                params: dict[str, str] | None = None,
-                stream: bool = False, timeout: int = 2) -> requests.Response:
+    @backoff.on_exception(
+        backoff.constant,
+        (RemoteDisconnected, RequestsConnectionError, HTTPError, ReadTimeout),
+        max_time=60,
+        interval=0.1,
+        giveup=is_final,
+        on_backoff=backoff_handler,
+        backoff_log_level=logging.DEBUG,
+        giveup_log_level=logging.DEBUG,
+    )
+    def api_get(
+        self,
+        endpoint_name: str,
+        *template_args: str,
+        params: dict[str, str] | None = None,
+        stream: bool = False,
+        timeout: int = 2,
+    ) -> requests.Response:
         """
         Send a GET to lichess.org.
 
@@ -202,9 +237,12 @@ class Lichess:
         response.encoding = "utf-8"
         return response
 
-    def api_get_json(self, endpoint_name: str, *template_args: str,
-                     params: dict[str, str] | None = None
-                     ) -> PublicDataType | UserProfileType | dict[str, list[GameType]]:
+    def api_get_json(
+        self,
+        endpoint_name: str,
+        *template_args: str,
+        params: dict[str, str] | None = None,
+    ) -> PublicDataType | UserProfileType | dict[str, list[GameType]]:
         """
         Send a GET to the lichess.org endpoints that return a JSON.
 
@@ -214,11 +252,17 @@ class Lichess:
         :return: lichess.org's response in a dict.
         """
         response = self.api_get(endpoint_name, *template_args, params=params)
-        json_response: PublicDataType | UserProfileType | dict[str, list[GameType]] = response.json()
+        json_response: PublicDataType | UserProfileType | dict[str, list[GameType]] = (
+            response.json()
+        )
         return json_response
 
-    def api_get_list(self, endpoint_name: str, *template_args: str,
-                     params: dict[str, str] | None = None) -> list[UserProfileType]:
+    def api_get_list(
+        self,
+        endpoint_name: str,
+        *template_args: str,
+        params: dict[str, str] | None = None,
+    ) -> list[UserProfileType]:
         """
         Send a GET to the lichess.org endpoints that return a list containing JSON.
 
@@ -231,8 +275,12 @@ class Lichess:
         json_response: list[UserProfileType] = response.json()
         return json_response
 
-    def api_get_raw(self, endpoint_name: str, *template_args: str,
-                    params: dict[str, str] | None = None) -> str:
+    def api_get_raw(
+        self,
+        endpoint_name: str,
+        *template_args: str,
+        params: dict[str, str] | None = None,
+    ) -> str:
         """
         Send a GET to lichess.org that returns plain text (UTF-8).
 
@@ -244,22 +292,26 @@ class Lichess:
         response = self.api_get(endpoint_name, *template_args, params=params)
         return response.text
 
-    @backoff.on_exception(backoff.constant,
-                          (RemoteDisconnected, RequestsConnectionError, HTTPError, ReadTimeout),
-                          max_time=60,
-                          interval=0.1,
-                          giveup=is_final,
-                          on_backoff=backoff_handler,
-                          backoff_log_level=logging.DEBUG,
-                          giveup_log_level=logging.DEBUG)
-    def api_post(self,
-                 endpoint_name: str,
-                 *template_args: str,
-                 data: str | dict[str, str] | None = None,
-                 headers: dict[str, str] | None = None,
-                 params: dict[str, str] | None = None,
-                 payload: REQUESTS_PAYLOAD_TYPE | None = None,
-                 raise_for_status: bool = True) -> ChallengeType | TOKEN_TESTS_TYPE | None:
+    @backoff.on_exception(
+        backoff.constant,
+        (RemoteDisconnected, RequestsConnectionError, HTTPError, ReadTimeout),
+        max_time=60,
+        interval=0.1,
+        giveup=is_final,
+        on_backoff=backoff_handler,
+        backoff_log_level=logging.DEBUG,
+        giveup_log_level=logging.DEBUG,
+    )
+    def api_post(
+        self,
+        endpoint_name: str,
+        *template_args: str,
+        data: str | dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        payload: REQUESTS_PAYLOAD_TYPE | None = None,
+        raise_for_status: bool = True,
+    ) -> ChallengeType | TOKEN_TESTS_TYPE | None:
         """
         Send a POST to lichess.org.
 
@@ -275,7 +327,9 @@ class Lichess:
         logging.getLogger("backoff").setLevel(self.logging_level)
         path_template = self.get_path_template(endpoint_name)
         url = urljoin(self.baseUrl, path_template.format(*template_args))
-        response = self.session.post(url, data=data, headers=headers, params=params, json=payload, timeout=2)
+        response = self.session.post(
+            url, data=data, headers=headers, params=params, json=payload, timeout=2
+        )
 
         if endpoint_name == "challenge":
             return self.handle_challenge(response)
@@ -300,7 +354,9 @@ class Lichess:
         if self.is_rate_limited(path_template):
             time_left = self.rate_limit_time_left(path_template)
             raise RateLimitedError(
-                f"{path_template} is rate-limited. Will retry in {sec_str(time_left)} seconds.", time_left)
+                f"{path_template} is rate-limited. Will retry in {sec_str(time_left)} seconds.",
+                time_left,
+            )
         return path_template
 
     def handle_challenge(self, response: requests.models.Response) -> ChallengeType:
@@ -318,7 +374,9 @@ class Lichess:
 
         return challenge_response
 
-    def set_rate_limit_delay(self, path_template: str, delay_time: datetime.timedelta) -> None:
+    def set_rate_limit_delay(
+        self, path_template: str, delay_time: datetime.timedelta
+    ) -> None:
         """
         Set a delay to a path template if it was rate limited.
 
@@ -326,7 +384,7 @@ class Lichess:
         :param delay_time: How long we won't call this endpoint.
         """
         logger.warning(
-            "Endpoint rate limited",
+            "rate_limited",
             extra={"endpoint": path_template, "wait_seconds": sec_str(delay_time)},
         )
         self.rate_limit_timers[path_template] = Timer(delay_time)
@@ -350,8 +408,12 @@ class Lichess:
         :param game_id: The id of the game.
         :param move: The move to make.
         """
-        self.api_post("move", game_id, str(move.move),
-                      params={"offeringDraw": str(move.draw_offered).lower()})
+        self.api_post(
+            "move",
+            game_id,
+            str(move.move),
+            params={"offeringDraw": str(move.draw_offered).lower()},
+        )
 
     def accept_takeback(self, game_id: str, accept: bool) -> bool:
         """Answer an opponent's move takeback request."""
@@ -376,7 +438,11 @@ class Lichess:
         if len(text) > MAX_CHAT_MESSAGE_LEN:
             logger.warning(
                 "Chat message too long",
-                extra={"message_length": len(text), "max_length": MAX_CHAT_MESSAGE_LEN, "message": text},
+                extra={
+                    "message_length": len(text),
+                    "max_length": MAX_CHAT_MESSAGE_LEN,
+                    "message": text,
+                },
             )
 
         data = {"room": room, "text": text}
@@ -401,10 +467,13 @@ class Lichess:
     def decline_challenge(self, challenge_id: str, reason: str = "generic") -> None:
         """Decline a challenge."""
         with contextlib.suppress(Exception):
-            self.api_post("decline", challenge_id,
-                          data=f"reason={reason}",
-                          headers={"Content-Type": "application/x-www-form-urlencoded"},
-                          raise_for_status=False)
+            self.api_post(
+                "decline",
+                challenge_id,
+                data=f"reason={reason}",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                raise_for_status=False,
+            )
 
     def get_profile(self) -> UserProfileType:
         """Get the bot's profile (e.g. username)."""
@@ -429,7 +498,9 @@ class Lichess:
 
     def set_user_agent(self, username: str) -> None:
         """Set the user agent for communication with lichess.org."""
-        self.header.update({"User-Agent": f"lichess-bot/{self.version} user:{username}"})
+        self.header.update(
+            {"User-Agent": f"lichess-bot/{self.version} user:{username}"}
+        )
         self.session.headers.update(self.header)
 
     def get_game_pgn(self, game_id: str) -> str:
@@ -450,28 +521,42 @@ class Lichess:
 
     def challenge(self, username: str, payload: REQUESTS_PAYLOAD_TYPE) -> ChallengeType:
         """Create a challenge."""
-        return cast(ChallengeType,
-                    self.api_post("challenge", username, payload=payload, raise_for_status=False))
+        return cast(
+            ChallengeType,
+            self.api_post(
+                "challenge", username, payload=payload, raise_for_status=False
+            ),
+        )
 
     def cancel(self, challenge_id: str) -> None:
         """Cancel a challenge."""
         self.api_post("cancel", challenge_id, raise_for_status=False)
 
-    def online_book_get(self, path: str, params: dict[str, str | int] | None = None,
-                        stream: bool = False) -> OnlineType:
+    def online_book_get(
+        self,
+        path: str,
+        params: dict[str, str | int] | None = None,
+        stream: bool = False,
+    ) -> OnlineType:
         """Get an external move from online sources (chessdb or lichess.org)."""
-        @backoff.on_exception(backoff.constant,
-                              (RemoteDisconnected, RequestsConnectionError, HTTPError, ReadTimeout),
-                              max_time=60,
-                              max_tries=self.max_retries,
-                              interval=0.1,
-                              giveup=is_final,
-                              on_backoff=backoff_handler,
-                              backoff_log_level=logging.DEBUG,
-                              giveup_log_level=logging.DEBUG)
+
+        @backoff.on_exception(
+            backoff.constant,
+            (RemoteDisconnected, RequestsConnectionError, HTTPError, ReadTimeout),
+            max_time=60,
+            max_tries=self.max_retries,
+            interval=0.1,
+            giveup=is_final,
+            on_backoff=backoff_handler,
+            backoff_log_level=logging.DEBUG,
+            giveup_log_level=logging.DEBUG,
+        )
         def online_book_get() -> OnlineType:
-            json_response: OnlineType = self.other_session.get(path, timeout=2, params=params, stream=stream).json()
+            json_response: OnlineType = self.other_session.get(
+                path, timeout=2, params=params, stream=stream
+            ).json()
             return json_response
+
         return online_book_get()
 
     def is_online(self, user_id: str) -> bool:
