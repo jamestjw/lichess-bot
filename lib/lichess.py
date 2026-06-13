@@ -143,7 +143,7 @@ def backoff_handler(details: BackoffDetails) -> None:
             "wait_seconds": details.get("wait"),
             "tries": details["tries"],
             "target": getattr(details["target"], "__name__", str(details["target"])),
-            "args": args,
+            "call_args": args,
             "kwargs": kwargs,
         },
     )
